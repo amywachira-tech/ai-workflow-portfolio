@@ -24,13 +24,13 @@ Useful signal from calls and email replies dies in the SDR's memory instead of b
 
 **In scope, AI-assisted:**
 - Persona-level personalization drafting, to reduce the SDR's manual research time per lead.
-- Suggesting a sentiment tag (positive/neutral/negative) on email replies, based on message content.
+- Suggesting a sentiment tag on email replies, based on message content, using four tags: interested, not interested, needs follow-up, and not relevant.
 - Auto-enriching lead information at list-build time.
 
 **Explicitly out of scope for AI:**
 - Generating insights or recommendations on messaging strategy changes.
 - Sending messages on the SDR's behalf.
-- Auto-tagging positive replies and advancing them to next steps without confirmation.
+- Auto-tagging interested replies and advancing them to next steps without confirmation.
 - Filling deal information or pipeline progress directly.
 
 ### Data Requirements
@@ -65,7 +65,9 @@ A shared spreadsheet tracking customer/lead data, queried manually to calculate 
 
 ### Acceptance Criteria
 
-Given 20 test email replies, the system suggests a sentiment tag (positive/neutral/negative) for every reply, never leaves one untagged, and any reply below a set confidence threshold is flagged for the SDR to review manually rather than auto-classified.
+Given a labelled set of test email replies, the system suggests one of the four tags for every reply and never leaves one untagged. Every suggested tag is confirmed or corrected by the SDR before it is treated as final.
+
+An earlier version of this criterion sent only replies below a confidence threshold to the SDR. The classifier as built returns no confidence score, so every tag is confirmed instead. The evaluation in Section 7 supports that design: both errors were on ambiguous replies tagged without any signal of doubt.
 
 ---
 
@@ -88,7 +90,7 @@ Every step in the pipeline is categorized as one of three types, kept deliberate
 5. SDR confirms personalization: Human
 6. Instantly sends email: Automation
 7. Reply arrives in inbox: Automation
-8. AI suggests sentiment tag (positive/neutral/negative): AI
+8. AI suggests sentiment tag (interested / not interested / needs follow-up / not relevant): AI
 9. Human confirms tag: Human
 10. Call happens, notes logged: Human
 11. Data written to database: Automation
@@ -173,7 +175,7 @@ Based on 200 emails/week and the process described in discovery, not VOYGR's act
 
 - Clay, Launch tier: $185/month (2,500 data credits, 15,000 actions), sufficient at ~800 enrichments/month.
 - Instantly, Growth tier: $47/month (5,000 emails, 1,000 contacts/month), fits 800 sends/month comfortably.
-- Claude API: ~$10-20/month, personalization drafts (Sonnet) plus sentiment tagging (Haiku) at current volume, including buffer for retries.
+- Claude API: ~$10-20/month, personalization drafts (Sonnet) plus sentiment tagging at current volume, including buffer for retries. The estimate assumes Haiku for tagging; the prototype classifier runs on Sonnet, so the tagging share would be higher until it is moved to Haiku.
 - Database (SQLite): $0, no additional cost.
 
 **Total recurring cost estimate: roughly $240-250/month.** An estimate from public pricing, not a vendor quote, actual Clay credit use could push this toward the Growth tier if enrichment needs more than one data source per lead.
@@ -241,6 +243,21 @@ Note on numbering: `account_id` 1-3 came from earlier manual, file-based testing
 
 Sample size was deliberately trimmed from the plan's original 20-30 records to 5, a time-boxed decision made explicitly during the build and recorded here, not a hidden shortcut. Five records were judged sufficient to prove the mechanism works correctly; they are not sufficient to draw any conclusion about real-world reply or sentiment distribution, which was never the goal of this test.
 
+### Sentiment classifier evaluation
+
+The reply classifier (`sentiment_classifier.py`) was evaluated on 15 independently labelled replies (`eval_set.json`), weighted towards hard cases. It assigned the correct tag to **13 of 15** (`eval_results.json`).
+
+The tag set was redesigned from three tags (positive, neutral, negative) to four that each correspond to a different SDR action: interested, not interested, needs follow-up, and not relevant.
+
+Both errors were on ambiguous replies:
+
+| Reply | Correct tag | Model's tag |
+|---|---|---|
+| "Who is this? I don't recall signing up for anything." | not relevant (a list-quality problem) | not interested |
+| "Can you loop in my manager, Sarah, on this thread? She handles vendor decisions." | interested (a referral to the decision-maker) | needs follow-up |
+
+Neither error would have been caught by a confidence rule, since the classifier tagged both without any signal of doubt. This supports keeping SDR confirmation on every tag: at 20 to 30 replies a week, confirmation takes under 20 minutes.
+
 ---
 
 ## Section 8: Limitations
@@ -249,6 +266,7 @@ Sample size was deliberately trimmed from the plan's original 20-30 records to 5
 - **Flask's built-in development server is running in production.** Render's logs explicitly warn against this ("do not use it in a production deployment, use a production WSGI server instead"). Acceptable for a time-boxed prototype; a real deployment would use Gunicorn or similar.
 - **Sample size was 5 records, not the planned 20-30**, a deliberate, stated time trade-off (see Section 7), not a quality concession, but genuinely too small to validate real reply-rate or sentiment-distribution assumptions from Section 4's ROI estimate.
 - **The Clay-to-n8n-to-Render chain has not been tested as one single unbroken run.** Clay's enrichment/AI columns (Sections 1-4) and the n8n-to-Render database write (this section) have each been proven working, but a single end-to-end run starting from Clay and finishing at the database write has not yet been executed in one pass.
+- **The classifier evaluation used 15 replies.** Enough to show where the model goes wrong, too few to estimate production accuracy.
 - **No authentication on the Render endpoint.** `/insert` is currently open to any caller with the URL. Acceptable for a prototype; a real deployment would need at minimum an API key check.
 
 ---
@@ -259,6 +277,7 @@ Sample size was deliberately trimmed from the plan's original 20-30 records to 5
 - Replace Flask's development server with a production WSGI server (Gunicorn) for the Render deployment.
 - Run the full Clay → n8n → Render chain as one genuinely unbroken pipeline, not three separately-proven segments.
 - Scale the end-to-end test from 5 records to the originally planned 20-30 once time allows, to get a real (if still small) read on reply and sentiment distribution.
+- Record each SDR correction to a suggested tag and add it to the labelled set, so the evaluation grows with real replies.
 - Add basic authentication to the `/insert` endpoint before any real, non-test data would touch it.
 - Build the deferred `interactions` write path end to end (currently only `accounts` inserts have been tested live via n8n/Render; the `interactions` table and its account_id linkage were proven locally but not yet through the live deployed pipeline).
 
